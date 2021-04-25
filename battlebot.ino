@@ -5,6 +5,7 @@
 #include "Wheel.h"
 #include "ButtonMaker.h"
 #include "EEPROM.h"
+#include "Deathwheel.h"
 
 //## define the controller type here
 #define PS4Controls
@@ -27,12 +28,15 @@ char * mac = "14:C2:13:14:9C:7D";
 #define L_PWM 33
 #define M_ENABLE 25
 
+//### deathwheel pinout
+#define DEATHPIN 23
+
+Deathwheel deathwheel(DEATHPIN);
 
 //### CONFIG ######################
 #define DIAGNOSTICS false
 #define DIAGNOSTICSRATE 100
 long diagnosticsTimer = 0;
-
 
 //### SPEED SETTINGS
 int MAXSPEED = 120;
@@ -49,7 +53,7 @@ enum spdMode {
 
 
 //object wrappers that turn the PS4 continous output into buttons
-ButtonMaker up, down, left, right, options, triangle, L3;
+ButtonMaker up, down, left, right, options, triangle, L3, circle, L1, R1;
 
 //### INIT ########################
 int steeringMode = TWOWHEEL;
@@ -341,7 +345,15 @@ void checkPS4Controller() {
   }
   if (L3.isPress(PS4.L3())) speedAdjust = !speedAdjust;
 
-  engageBrake = (PS4.R1() || PS4.Cross());
+  if (L1.isPress(PS4.L1())) deathwheel.raiseSpeed(-10);
+  if (R1.isPress(PS4.R1())) deathwheel.raiseSpeed(10);
+
+  if (circle.isPress(PS4.Circle()))
+  {
+    if (deathwheel.isLive()) deathwheel.stop();
+    else deathwheel.startKilling();
+  }
+  engageBrake = PS4.Cross();
 
   if (PS4.L2()) speedBackward = PS4.L2Value();
   else speedBackward = 0;
