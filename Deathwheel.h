@@ -7,14 +7,18 @@
 class Deathwheel
 {
   public:
-  Deathwheel(int sawpin);
+  Deathwheel(int sawpin, int armpin);
   void raiseSpeed(int spd);
   void startKilling();
   void stop();
+  void moveArm(int armpos);
+  void setupSaw();
   bool isLive();
   
   private:
   Servo _sawblade;
+  Servo _arm;
+  int _armpos;
   bool _sawing;
   int _spd;
 };

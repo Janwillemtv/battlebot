@@ -30,8 +30,10 @@ char * mac = "14:C2:13:14:9C:7D";
 
 //### deathwheel pinout
 #define DEATHPIN 23
+#define DEATHARM 26
+#define NEUTRAL 180
 
-Deathwheel deathwheel(DEATHPIN);
+Deathwheel deathwheel(DEATHPIN, DEATHARM);
 
 //### CONFIG ######################
 #define DIAGNOSTICS false
@@ -366,6 +368,17 @@ void checkPS4Controller() {
 
   if (PS4.RStickX()) crabSteering = PS4.RStickX();
   else crabSteering = 0;
+
+  if (PS4.RStickY())
+  {
+    int cutoff = 20;
+    if (PS4.RStickY() > cutoff)
+    {
+      int pos = map(PS4.RStickY(), cutoff, 127, NEUTRAL, NEUTRAL - 140);
+      deathwheel.moveArm(pos);
+    }
+  }
+  else deathwheel.moveArm(NEUTRAL);
 #endif
 }
 
