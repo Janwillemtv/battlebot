@@ -7,11 +7,12 @@
 class Deathwheel
 {
   public:
-  Deathwheel(int sawpin, int armpin);
+  Deathwheel(int sawpin, int armpin, int zero, int maxpos);
   void raiseSpeed(int spd);
   void startKilling();
   void stop();
   void moveArm(int armpos);
+  void wiggleArm(int wiggle, int bias);
   void setupSaw();
   bool isLive();
   
@@ -21,6 +22,8 @@ class Deathwheel
   int _armpos;
   bool _sawing;
   int _spd;
+  int _zero;
+  int _max;
 };
 
 #endif

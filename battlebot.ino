@@ -1,26 +1,17 @@
 #include <ESP32Servo.h>
-
 #include <stdio.h>
+#include <AsyncTimer.h>
+#include <PS4Controller.h>
 
 #include "Wheel.h"
 #include "ButtonMaker.h"
 #include "EEPROM.h"
 #include "Deathwheel.h"
 
-//## define the controller type here
-#define PS4Controls
-//#define PS3Controls
+AsyncTimer t; //dope library allowing javascript style async functions (non blocking delay)
 
 //### BLUETOOTH MAC ADDRESS
 char * mac = "14:C2:13:14:9C:7D";
-
-#ifdef PS3Controls
-#include <Ps3Controller.h>
-#endif
-
-#ifdef PS4Controls
-#include <PS4Controller.h>
-#endif
 
 #define MAX_OUT_CHARS 64  //max nbr of characters to be sent on diagnostic demand
 
@@ -31,14 +22,15 @@ char * mac = "14:C2:13:14:9C:7D";
 //### deathwheel pinout
 #define DEATHPIN 23
 #define DEATHARM 26
-#define NEUTRAL 180
+#define NEUTRALPOS 180
+#define MAXPOS 0
 
-Deathwheel deathwheel(DEATHPIN, DEATHARM);
+Deathwheel deathwheel(DEATHPIN, DEATHARM, NEUTRALPOS, MAXPOS);
 
 //### CONFIG ######################
-#define DIAGNOSTICS false
+//comment out for no diagnostics
+#define DIAGNOSTICS
 #define DIAGNOSTICSRATE 100
-long diagnosticsTimer = 0;
 
 //### SPEED SETTINGS
 int MAXSPEED = 120;
@@ -53,9 +45,8 @@ enum spdMode {
 #define RACE 1
 #define FOURWHEEL 2
 
-
 //object wrappers that turn the PS4 continous output into buttons
-ButtonMaker up, down, left, right, options, triangle, L3, circle, L1, R1;
+ButtonMaker up, down, left, right, options, L3, circle, triangle, cross, square;
 
 //### INIT ########################
 int steeringMode = TWOWHEEL;
@@ -72,9 +63,10 @@ long speedUpdateTimer = 0;
 int speedForward = 0;
 int speedBackward = 0;
 int steering = 0;
-int deathWheel = 0;
+//int deathWheel = 0;
 
 bool engageBrake = false;
+bool cutting = false;
 
 // 16 servo objects can be created on the ESP32
 //### WHEELS, first entry is timer and config, second is servo pin
@@ -104,13 +96,9 @@ int getOffset() {
 }
 
 void setup() {
+  t.setup(); //async timer
   Serial.begin(115200);
-#ifdef PS4Controls
   PS4.begin(mac);
-#endif
-#ifdef PS3Controls
-  Ps3.begin(mac);
-#endif
 
   Serial.println("Ready.");
 
@@ -137,22 +125,20 @@ void setup() {
   pinMode(M_ENABLE, OUTPUT);
   pinMode(L_PWM, OUTPUT);
   pinMode(R_PWM, OUTPUT);
-
+  // timer
+#ifdef DIAGNOSTICS
+  t.setInterval([&]() {
+    printDiagnostics();
+  }, DIAGNOSTICSRATE);
+#endif
 }
 
 //### LOOP #########################
 void loop() {
   // check connection to controller
-  bool controllerConnected = false;
-#ifdef PS4Controls
-  controllerConnected = PS4.isConnected();
-  if (controllerConnected) checkPS4Controller();
-#endif
-#ifdef PS3Controls
-  controllerConnected = Ps3.isConnected();
-  if (controllerConnected) checkPS3Controller();
-#endif
-  if (!controllerConnected) disableBot();
+  if (PS4.isConnected()) checkPS4Controller();
+  else disableBot();
+  t.handle(); //async timer
 
   //### DRIVE
   MAXSPEED = getMaxSpeed();
@@ -183,7 +169,7 @@ void loop() {
   predictSpeed(spd);
 
   //## apply predicted speed on steering efficacy
-  if (speedAdjust) adjustSteering(spd);
+  if (speedAdjust) adjustSteering(int(predictedSpeed));
   else staticSteering();
 
   //### STEERING
@@ -224,8 +210,6 @@ void loop() {
       RR.steer(combiBack);
     }
   }
-
-  if (DIAGNOSTICS) printDiagnostics();
 }
 
 bool isClose(float value, float comparison)
@@ -242,7 +226,7 @@ void predictSpeed(int spd)
     else
     {
       float added = (float(spd) - predictedSpeed);
-      predictedSpeed += (added * (engageBrake ? 0.07 : 0.02));
+      predictedSpeed += (added * (engageBrake ? 0.15 : 0.06));
     }
     speedUpdateTimer = millis();
   }
@@ -280,21 +264,11 @@ void steerPizza()
   }
 }
 
-bool printDiagnostics() {
-
-  if (millis() > diagnosticsTimer + DIAGNOSTICSRATE)
-  {
-    //char buffer[MAX_OUT_CHARS + 1];  //buffer used to format a line (+1 is for trailing 0)
-    //sprintf(buffer, "SPEED: %d, STEERING: %d, DEATHWHEEL: %d", predictedSpeed, steering, deathWheel);
-    //Serial.print(buffer);
-    Serial.print("SPEED: ");
-    Serial.println(predictedSpeed);
-    Serial.print(" STMODE: ");
-    Serial.println(steeringMode);
-    diagnosticsTimer = millis();
-    return true;
-  }
-  return false;
+void printDiagnostics() {
+  Serial.print("SPEED: ");
+  Serial.println(predictedSpeed);
+  Serial.print(" STMODE: ");
+  Serial.println(steeringMode);
 }
 
 int getMaxSpeed() {
@@ -305,7 +279,6 @@ int getMaxSpeed() {
 }
 
 void checkPS4Controller() {
-#ifdef PS4Controls
   if (down.isPress(PS4.Down()))
   {
     if (speedMode == NORMAL) speedMode = SLOW;
@@ -328,34 +301,33 @@ void checkPS4Controller() {
     safeOffset();
   }
 
-  if (triangle.isPress(PS4.Triangle()))
+  //set rpm of the sawblade
+  if (triangle.isPress(PS4.Triangle())) deathwheel.raiseSpeed(10);
+  if (square.isPress(PS4.Square())) deathwheel.raiseSpeed(-10);
+
+  //animation slash
+  if (cross.isPress(PS4.Cross()))
   {
-    switch (deathWheel) {
-      case 0:
-        deathWheel = 200;
-        break;
-      case 200:
-        deathWheel = 0;
-        break;
-    }
+    if (!deathwheel.isLive()) slash();
   }
+  if (circle.isPress(PS4.Circle())) toggleSlash();
 
   if (options.isPress(PS4.Options()))
   {
     steeringMode ++;
     if (steeringMode > FOURWHEEL) steeringMode = TWOWHEEL;
   }
-  if (L3.isPress(PS4.L3())) speedAdjust = !speedAdjust;
-
-  if (L1.isPress(PS4.L1())) deathwheel.raiseSpeed(-10);
-  if (R1.isPress(PS4.R1())) deathwheel.raiseSpeed(10);
-
-  if (circle.isPress(PS4.Circle()))
+  //left joystick press
+  if (L3.isPress(PS4.L3())) 
   {
-    if (deathwheel.isLive()) deathwheel.stop();
-    else deathwheel.startKilling();
+    speedAdjust = !speedAdjust;
+    spdFeedback();
   }
-  engageBrake = PS4.Cross();
+
+  //if (L1.isPress(PS4.L1())) deathwheel.raiseSpeed(-10);
+  //if (R1.isPress(PS4.R1())) deathwheel.raiseSpeed(10);
+
+  engageBrake = (PS4.L1() || PS4.R1());
 
   if (PS4.L2()) speedBackward = PS4.L2Value();
   else speedBackward = 0;
@@ -369,70 +341,50 @@ void checkPS4Controller() {
   if (PS4.RStickX()) crabSteering = PS4.RStickX();
   else crabSteering = 0;
 
-  if (PS4.RStickY())
+  if (cutting)
   {
-    int cutoff = 20;
-    if (PS4.RStickY() > cutoff)
-    {
-      int pos = map(PS4.RStickY(), cutoff, 127, NEUTRAL, NEUTRAL - 140);
-      deathwheel.moveArm(pos);
-    }
+    const int cutoff = -20; //bit of play
+    if (PS4.RStickY() < cutoff) deathwheel.wiggleArm(-PS4.RStickY(), -cutoff);
   }
-  else deathwheel.moveArm(NEUTRAL);
-#endif
 }
 
-void checkPS3Controller() {
-#ifdef PS3Controls
-  if (Ps3.event.button_down.down)
-  {
-    if (speedMode == NORMAL) speedMode = SLOW;
-    else if (speedMode == INSANE) speedMode = NORMAL;
-  }
-  if (Ps3.event.button_down.up)
-  {
-    if (speedMode == SLOW) speedMode = NORMAL;
-    else if (speedMode == NORMAL) speedMode = INSANE;
-  }
-  if (Ps3.event.button_down.left) {
-    steeringOffset --;
-    setOffset(steeringOffset);
-    safeOffset();
-  }
-  if (Ps3.event.button_down.right)
-  {
-    steeringOffset ++;
-    setOffset(steeringOffset);
-    safeOffset();
-  }
+void spdFeedback()
+{
+  if (speedAdjust) PS4.setLed(0, 255, 0);
+  else PS4.setLed(0, 0, 255);
+  PS4.sendToController();
+}
 
-  if (Ps3.event.button_down.triangle)
-  {
-    switch (deathWheel) {
-      case 0:
-        deathWheel = 200;
-        break;
-      case 200:
-        deathWheel = 0;
-        break;
-    }
-  }
+//a slash takes 1700 ms of which ~800ms is contact time
+void slash()
+{
+  cut();
+  t.setTimeout([&]() {
+    uncut();
+  }, 1500);
+}
 
-  if (Ps3.event.button_down.select)
-  {
-    steeringMode ++;
-    if (steeringMode > FOURWHEEL) steeringMode = TWOWHEEL;
-  }
-  if (Ps3.event.button_down.l3) speedAdjust = !speedAdjust;
+void toggleSlash()
+{
+  if (deathwheel.isLive()) uncut();
+  else cut();
+}
+void cut() {
+  //spinup the motor ...
+  deathwheel.startKilling();
+  cutting = true;
+  // ... and move the arm forward
+  deathwheel.moveArm(127);
+}
 
-  engageBrake = (Ps3.data.button.cross || Ps3.data.button.r1);
-
-  speedForward = Ps3.data.analog.button.r2;
-  speedBackward = Ps3.data.analog.button.l2;
-
-  steering = Ps3.data.analog.stick.lx;
-  crabSteering = Ps3.data.analog.stick.rx;
-#endif
+void uncut() {
+  //begin retracting ...
+  cutting = false;
+  deathwheel.moveArm(0);
+  // ... and stop spinning the wheel after a slight delay
+  t.setTimeout([&]() {
+    deathwheel.stop();
+  }, 200);
 }
 
 void staticSteering()
@@ -448,7 +400,7 @@ void adjustSteering(int spd)
   int absSPD = abs(spd);
   int cut = 120;
   if (absSPD < 50) absSPD = int(absSPD / 2);
-  else if (absSPD > 120) absSPD = cut + int((absSPD - cut) / 10);
+  else if (absSPD > cut) absSPD = cut + int((absSPD - cut) / 10);
   int range = map(absSPD, 0, 135, maxRange, 10);
   FL.setMaxRange(range);
   FR.setMaxRange(range);
@@ -470,7 +422,6 @@ void disableBot()
   speedBackward = 0;
   steering = 0;
   crabSteering = 0;
-  deathWheel = 0;
   disableMotor();
 }
 
@@ -496,7 +447,7 @@ void motorForward(int spd) {
   analogWrite(L_PWM, spd);
 }
 void motorBrake() {
-  digitalWrite(M_ENABLE, HIGH);
+  digitalWrite(M_ENABLE, LOW); //HIGH ?
   digitalWrite(L_PWM, LOW);
   digitalWrite(R_PWM, LOW);
 }
